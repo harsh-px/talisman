@@ -2,6 +2,7 @@ package px
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	portworx "github.com/portworx/talisman/pkg/apis/portworx.com"
@@ -25,10 +26,14 @@ import (
 )
 
 const (
-	pxDefaultNamespace    = "kube-system"
-	pxDefaultResourceName = "portworx"
-	pxClusterServiceName  = "portworx-service"
-	pxRestEndpointPort    = 9001
+	pxDefaultNamespace       = "kube-system"
+	pxDefaultResourceName    = "portworx"
+	pxClusterServiceName     = "portworx-service"
+	pxRestEndpointPort       = 9001
+	pxRestHealthEndpointPort = 9015
+	pxEnableLabelKey         = "px/enabled"
+	pxDefaultImageRepo       = "portworx/oci-monitor"
+	pxDefaultImageTag        = "1.2.12.0"
 )
 
 var pxDefaultLabels = map[string]string{"name": pxDefaultResourceName}
@@ -41,7 +46,9 @@ type pxClusterOps struct {
 }
 
 type pxCluster struct {
-	spec *apiv1alpha1.Cluster
+	spec        *apiv1alpha1.Cluster
+	pxImageRepo string
+	pxImageTag  string
 }
 
 func (p *pxClusterOps) Create(namespace, name string) error {
@@ -57,7 +64,11 @@ func (p *pxClusterOps) Create(namespace, name string) error {
 	// TODO add gatekeeper check to ensure only one cluster is running
 	logrus.Infof("creating a new portworx cluster: %#v", spec)
 
-	c := &pxCluster{spec: spec}
+	c := &pxCluster{
+		spec:        spec,
+		pxImageRepo: pxDefaultImageRepo,
+		pxImageTag:  pxDefaultImageTag,
+	}
 	// Get RBAC specs
 	_, err = c.getPXClusterRole()
 	if err != nil {
@@ -186,6 +197,9 @@ func (p *pxCluster) getPXService() (*corev1.Service, error) {
 }
 
 func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
+	trueVar := true
+	kvdbEndpoints := strings.Join(p.spec.Spec.Kvdb.Endpoints, ",")
+
 	return &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            pxDefaultResourceName,
@@ -209,7 +223,160 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 					Affinity: &corev1.Affinity{
 						NodeAffinity: &corev1.NodeAffinity{
 							RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-								NodeSelectorTerms: []corev1.NodeSelectorTerm{},
+								NodeSelectorTerms: []corev1.NodeSelectorTerm{
+									corev1.NodeSelectorTerm{
+										MatchExpressions: []corev1.NodeSelectorRequirement{
+											corev1.NodeSelectorRequirement{
+												Key:      pxEnableLabelKey,
+												Operator: corev1.NodeSelectorOpNotIn,
+												Values:   []string{"false"},
+											},
+											corev1.NodeSelectorRequirement{
+												Key:      "node-role.kubernetes.io/master",
+												Operator: corev1.NodeSelectorOpDoesNotExist,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					HostNetwork: true,
+					HostPID:     true,
+					Containers: []corev1.Container{
+						corev1.Container{
+							Name:  pxDefaultResourceName,
+							Image: fmt.Sprintf("%s:%s", p.pxImageRepo, p.pxImageTag),
+							TerminationMessagePath: "/tmp/px-termination-log",
+							ImagePullPolicy:        corev1.PullAlways,
+							Args: []string{
+								"-k", kvdbEndpoints,
+								"-c", p.spec.Name,
+								"-a", // TODO take in storage args
+								"-f",
+								"-x", "kubernetes",
+							},
+							Env: p.spec.Spec.Env,
+							LivenessProbe: &corev1.Probe{
+								PeriodSeconds:       30,
+								InitialDelaySeconds: 840,
+								Handler: corev1.Handler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Host: "127.0.0.1",
+										Path: "/status",
+										Port: intstr.IntOrString{
+											Type:   intstr.Int,
+											IntVal: pxRestEndpointPort,
+										},
+									},
+								},
+							},
+							ReadinessProbe: &corev1.Probe{
+								PeriodSeconds: 10,
+								Handler: corev1.Handler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Host: "127.0.0.1",
+										Path: "/health",
+										Port: intstr.IntOrString{
+											Type:   intstr.Int,
+											IntVal: pxRestHealthEndpointPort,
+										},
+									},
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								Privileged: &trueVar,
+							},
+							/*VolumeMounts: []corev1.VolumeMount{
+								corev1.VolumeMount{
+									Name:      "dockersock",
+									MountPath: "/var/run/docker.sock",
+								},
+								corev1.VolumeMount{
+									Name:      "kubelet",
+									MountPath: "/var/lib/kubelet:shared",
+								},
+								corev1.VolumeMount{
+									Name:      "libosd",
+									MountPath: "/var/lib/osd:shared",
+								},
+								corev1.VolumeMount{
+									Name:      "etcpwx",
+									MountPath: "/etc/pwx",
+								},
+								corev1.VolumeMount{
+									Name:      "optpwx",
+									MountPath: "/opt/pwx",
+								},
+								corev1.VolumeMount{
+									Name:      "proc1nsmount",
+									MountPath: "/host_proc/1/ns",
+								},
+								corev1.VolumeMount{
+									Name:      "sysdmount",
+									MountPath: "/etc/systemd/system",
+								},
+							},*/
+						},
+					},
+					RestartPolicy:      "Always",
+					ServiceAccountName: pxDefaultResourceName,
+					// TODO: update volummes based on openshift
+					Volumes: []corev1.Volume{
+						corev1.Volume{
+							Name: "dockersock",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/var/run/docker.sock",
+								},
+							},
+						},
+						corev1.Volume{
+							Name: "kubelet",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/var/lib/kubelet",
+								},
+							},
+						},
+						corev1.Volume{
+							Name: "libosd",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/var/lib/osd",
+								},
+							},
+						},
+						corev1.Volume{
+							Name: "etcpwx",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/etc/pwx",
+								},
+							},
+						},
+						corev1.Volume{
+							Name: "optpwx",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/opt/pwx",
+								},
+							},
+						},
+						corev1.Volume{
+							Name: "proc1nsmount",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/proc/1/ns",
+								},
+							},
+						},
+						corev1.Volume{
+							Name: "sysdmount",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/etc/systemd/system",
+								},
 							},
 						},
 					},
