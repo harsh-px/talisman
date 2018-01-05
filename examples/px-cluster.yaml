@@ -6,4 +6,4 @@ metadata:
 spec:
   kvdb:
     endpoints:
-    - etcd:sasadsadsa
+    - etcd://192.168.56.70:2379

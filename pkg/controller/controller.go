@@ -13,9 +13,9 @@ import (
 	informers "github.com/portworx/talisman/pkg/client/informers/externalversions"
 	listers "github.com/portworx/talisman/pkg/client/listers/portworx.com/v1alpha1"
 	"github.com/portworx/talisman/pkg/cluster/px"
+
 	"github.com/portworx/talisman/pkg/crd"
 	"github.com/sirupsen/logrus"
-	"k8s.io/api/core/v1"
 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -25,9 +25,8 @@ import (
 	kwatch "k8s.io/apimachinery/pkg/watch"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -51,24 +50,21 @@ const (
 // Controller is the controller implementation for Cluster resources
 type Controller struct {
 	// kubeclientset is a standard kubernetes clientset
-	kubeclientset kubernetes.Interface
-	// pxoperatorclientset is a clientset for our own API group
-	pxoperatorclientset clientset.Interface
-
+	kubeclientset   kubernetes.Interface
 	apiExtClientset apiextensionsclient.Interface
+	operatorClient  clientset.Interface
 
-	clustersLister  listers.ClusterLister
-	clustersSynced  cache.InformerSynced
-	clusterProvider px.Cluster
+	clustersLister          listers.ClusterLister
+	clusterProvider         px.Cluster
+	clustersSynced          cache.InformerSynced
+	kubeInformerFactory     kubeinformers.SharedInformerFactory
+	operatorInformerFactory informers.SharedInformerFactory
 	// workqueue is a rate limited work queue. This is used to queue work to be
 	// processed instead of performing it as soon as a change happens. This
 	// means we can ensure we only process a fixed amount of resources at a
 	// time, and makes it easy to ensure we are never processing the same item
 	// simultaneously in two different workers.
 	workqueue workqueue.RateLimitingInterface
-	// recorder is an event recorder for recording Event resources to the
-	// Kubernetes API.
-	recorder  record.EventRecorder
 	resources []crd.CustomResource
 }
 
@@ -78,15 +74,20 @@ type event struct {
 }
 
 // New returns a new controller for managing portworx clusters
-func New(
-	kubeclientset kubernetes.Interface,
-	pxoperatorclientset clientset.Interface,
-	apiExtClientset apiextensionsclient.Interface,
-	kubeInformerFactory kubeinformers.SharedInformerFactory,
-	pxoperatorInformerFactory informers.SharedInformerFactory) *Controller {
+func New() *Controller {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		logrus.Fatalf("Error building kubeconfig: %s", err.Error())
+	}
+
+	kubeClient := kubernetes.NewForConfigOrDie(cfg)
+	operatorClient := clientset.NewForConfigOrDie(cfg)
+	apiExtClientset := apiextensionsclient.NewForConfigOrDie(cfg)
+	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
+	operatorInformerFactory := informers.NewSharedInformerFactory(operatorClient, time.Second*30)
 
 	// obtain references to shared index informers for the PX cluster types
-	pxInformer := pxoperatorInformerFactory.Portworx().V1alpha1().Clusters()
+	pxInformer := operatorInformerFactory.Portworx().V1alpha1().Clusters()
 
 	// Add portworx types to the default Kubernetes Scheme so Events can be
 	// logged for them
@@ -109,15 +110,15 @@ func New(
 	}
 
 	controller := &Controller{
-		kubeclientset:       kubeclientset,
-		pxoperatorclientset: pxoperatorclientset,
-		apiExtClientset:     apiExtClientset,
-		clustersLister:      pxInformer.Lister(),
-		clustersSynced:      pxInformer.Informer().HasSynced,
-		clusterProvider:     clusterProvider,
+		kubeclientset:           kubeClient,
+		apiExtClientset:         apiExtClientset,
+		operatorClient:          operatorClient,
+		clustersSynced:          pxInformer.Informer().HasSynced,
+		clusterProvider:         clusterProvider,
+		kubeInformerFactory:     kubeInformerFactory,
+		operatorInformerFactory: operatorInformerFactory,
 		workqueue: workqueue.NewNamedRateLimitingQueue(
 			workqueue.DefaultControllerRateLimiter(), "Clusters"),
-		recorder:  CreateRecorder(kubeclientset, controllerAgentName, ""),
 		resources: resources,
 	}
 
@@ -171,13 +172,7 @@ func (c *Controller) handleObject(obj interface{}, eventType kwatch.EventType) {
 	}
 
 	logrus.Infof("Processing object: %s", object.GetName())
-	cluster, err := c.clustersLister.Clusters(object.GetNamespace()).Get(object.GetName())
-	if err != nil {
-		logrus.Infof("ignoring orphaned object '%s' of cluster '%s'", object.GetSelfLink(), object.GetName())
-		return
-	}
-
-	c.enqueueCluster(cluster, eventType)
+	c.enqueueCluster(object, eventType)
 	return
 }
 
@@ -220,6 +215,9 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 
 	// Start the informer factories to begin populating the informer caches
 	logrus.Info("Starting controller")
+
+	go c.kubeInformerFactory.Start(stopCh)
+	go c.operatorInformerFactory.Start(stopCh)
 
 	// Wait for the caches to be synced before starting workers
 	logrus.Info("Waiting for informer caches to sync")
@@ -313,66 +311,36 @@ func (c *Controller) sync(ev event) error {
 		return nil
 	}
 
-	cluster, err := c.clustersLister.Clusters(namespace).Get(name)
+	spec, err := c.operatorClient.Portworx().Clusters(namespace).Get(name,
+		metav1.GetOptions{})
 	if err != nil {
-		// The Cluster resource may no longer exist, in which case we stop
-		// processing.
 		if errors.IsNotFound(err) {
-			runtime.HandleError(fmt.Errorf("cluster '%s:%s' in work queue no longer exists", namespace, name))
+			runtime.HandleError(fmt.Errorf("cluster '%s:%s' no longer exists", namespace, name))
 			return nil
 		}
 
+		logrus.Errorf("failed to get px cluster for event: %v. Err: %v", ev.eventType, err)
 		return err
 	}
 
 	switch ev.eventType {
 	case kwatch.Added:
-		err = c.clusterProvider.Create(cluster)
+		err = c.clusterProvider.Create(spec)
 	case kwatch.Modified:
-		err = c.clusterProvider.Upgrade(cluster)
+		err = c.clusterProvider.Upgrade(spec)
 	case kwatch.Deleted:
-		err = c.clusterProvider.Destroy(cluster)
+		err = c.clusterProvider.Destroy(spec)
 	default:
-		err = fmt.Errorf("unsupported event type for cluster: %s", cluster.Name)
+		err = fmt.Errorf("unsupported event type for cluster: %s", name)
 	}
 
 	// If an error occurs during Update, we'll requeue the item so we can
 	// attempt processing again later. This could have been caused by a
 	// temporary network failure, or any other transient reason.
 	if err != nil {
+		logrus.Errorf("event: %v failed. Err: %v", ev.eventType, err)
 		return err
 	}
 
-	// TODO implemented the update of the 'cluster' object here
-	// Finally, we update the status block of the Cluster resource to reflect the
-	// current state of the world
-	err = c.updateClusterStatus(cluster)
-	if err != nil {
-		return err
-	}
-
-	c.recorder.Event(cluster, v1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
 	return nil
-}
-
-// TODO fix the signature based on px objects
-func (c *Controller) updateClusterStatus(cluster *api.Cluster) error {
-	// NEVER modify objects from the store. It's a read-only, local cache.
-	// You can use DeepCopy() to make a deep copy of original object and modify this copy
-	// Or create a copy manually for better performance
-	clusterCopy := cluster.DeepCopy()
-
-	// TODO perform additional operations to fetch status. Refer to sample, etcd and rook operators
-
-	_, err := c.pxoperatorclientset.Portworx().Clusters(cluster.Namespace).Update(clusterCopy)
-	return err
-}
-
-// CreateRecorder creates a event recorder
-func CreateRecorder(kubecli kubernetes.Interface, name, namespace string) record.EventRecorder {
-	eventBroadcaster := record.NewBroadcaster()
-	eventBroadcaster.StartLogging(logrus.Infof)
-	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{
-		Interface: v1core.New(kubecli.Core().RESTClient()).Events(namespace)})
-	return eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: name})
 }

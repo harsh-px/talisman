@@ -8,9 +8,8 @@
 OPERATOR_IMG=$(DOCKER_HUB_REPO)/$(DOCKER_HUB_OPERATOR_IMAGE):$(DOCKER_HUB_TAG)
 
 APP_NAME := operator
-SHA := $(shell git rev-parse --short HEAD)
-BRANCH := $(subst /,-,$(shell git rev-parse --abbrev-ref HEAD))
-VER := $(shell git rev-parse --short HEAD)
+VERSION=0.0.1
+SHORT_BUILD_VERSION=$(shell git rev-parse --short HEAD)
 ARCH := $(shell go env GOARCH)
 GOOS := $(shell go env GOOS)
 +GLIDEPATH := $(shell command -v glide 2> /dev/null)
@@ -18,16 +17,6 @@ DIR=.
 
 ifndef TAGS
 TAGS := daemon
-endif
-
-ifdef APP_SUFFIX
-  VERSION = $(VER)-$(subst /,-,$(APP_SUFFIX))
-else
-ifeq (master,$(BRANCH))
-  VERSION = $(VER)
-else
-  VERSION = $(VER)-$(BRANCH)
-endif
 endif
 
 # Go setup
@@ -49,8 +38,9 @@ GOFMT := gofmt
 
 all: clean pretest operator
 
-# print the version
 version:
+	@echo $(SHORT_BUILD_VERSION)
+	@VERSION=$(VERSION)$(SHORT_BUILD_VERSION)
 	@echo $(VERSION)
 
 # print the name of the app
