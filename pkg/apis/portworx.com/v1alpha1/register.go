@@ -8,8 +8,13 @@ import (
 	portworx "github.com/portworx/talisman/pkg/apis/portworx.com"
 )
 
-// SchemeGroupVersion is group version used to register these objects
-var SchemeGroupVersion = schema.GroupVersion{Group: portworx.GroupName, Version: "v1alpha1"}
+var (
+	// PXClusterKind is the kind of the PX cluster CRD
+	PXClusterKind = "Cluster"
+
+	// SchemeGroupVersion is group version used to register these objects
+	SchemeGroupVersion = schema.GroupVersion{Group: portworx.GroupName, Version: "v1alpha1"}
+)
 
 // Kind takes an unqualified kind and returns back a Group qualified GroupKind
 func Kind(kind string) schema.GroupKind {

@@ -33,9 +33,9 @@ type ClusterList struct {
 type ClusterSpec struct {
 	// Kvdb is the key value store configuration
 	Kvdb KvdbSpec `json:"kvdb"`
-	// Image is the specific image to use on all nodes of the cluster.
+	// PXVersion is the Portworx version to use on all nodes of the cluster.
 	// +optional
-	Image string `json:"image,omitempty"`
+	PXVersion string `json:"image,omitempty"`
 	// Network specifies the networking setting to be used for all nodes. This
 	// can be overridden by individual nodes in the NodeSpec
 	Network NodeNetwork `json:"network,omitempty"`
