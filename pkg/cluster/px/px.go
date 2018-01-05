@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -23,12 +24,15 @@ import (
 )
 
 type pxCluster struct {
+	kubeClient     kubernetes.Interface
+	operatorClient clientset.Interface
 	recorder       record.EventRecorder
 	clustersLister listers.ClusterLister
 }
 
 func (p *pxCluster) Create(namespace, name string) error {
-	clusterSpec, err := p.clustersLister.Clusters(namespace).Get(name)
+	logrus.Infof("[debug] px create call for %s:%s", namespace, name)
+	clusterSpec, err := p.operatorClient.Portworx().Clusters(namespace).Get(name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -124,6 +128,8 @@ func NewPXClusterProvider(conf map[string]interface{}) (cluster.Cluster, error) 
 	operatorInformerFactory := informers.NewSharedInformerFactory(operatorClient, time.Second*30)
 	pxInformer := operatorInformerFactory.Portworx().V1alpha1().Clusters()
 	return &pxCluster{
+		kubeClient:     kubeClient,
+		operatorClient: operatorClient,
 		recorder:       k8sutil.CreateRecorder(kubeClient, "talisman", ""),
 		clustersLister: pxInformer.Lister(),
 	}, nil
