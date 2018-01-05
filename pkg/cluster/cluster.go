@@ -9,16 +9,16 @@ import (
 // This package follows the factory pattern.
 // Reference: http://matthewbrown.io/2016/01/23/factory-pattern-in-golang/
 
-type clusterInitFunction func(conf interface{}) (Cluster, error)
+type clusterInitFunction func(conf map[string]interface{}) (Cluster, error)
 
 // Cluster an interface to manage a storage cluster
 type Cluster interface {
 	// Create creates the given cluster
-	Create(obj interface{}) error
+	Create(namespace, name string) error
 	// Upgrade upgrades the given cluster
-	Upgrade(new interface{}) error
+	Upgrade(namespace, name string) error
 	// Destory destroys all components of the given cluster
-	Destroy(obj interface{}) error
+	Destroy(namespace, name string) error
 }
 
 var clusterFactories = make(map[string]clusterInitFunction)
@@ -39,7 +39,7 @@ func Register(name string, initFunc clusterInitFunction) {
 }
 
 // Get is function used to get a registered cluster provider
-func Get(name string, conf interface{}) (Cluster, error) {
+func Get(name string, conf map[string]interface{}) (Cluster, error) {
 	provider, ok := clusterFactories[name]
 	if !ok {
 		return nil, fmt.Errorf("cluster provider %s is not registered", name)

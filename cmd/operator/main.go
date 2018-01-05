@@ -10,12 +10,9 @@ import (
 	"time"
 
 	"github.com/coreos/etcd-operator/pkg/util/probe"
-	clientset "github.com/portworx/talisman/pkg/client/clientset/versioned"
-	informers "github.com/portworx/talisman/pkg/client/informers/externalversions"
 	"github.com/portworx/talisman/pkg/controller"
+	"github.com/portworx/talisman/pkg/k8sutil"
 	"github.com/sirupsen/logrus"
-	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
-	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
@@ -87,7 +84,7 @@ func main() {
 		kubecli.CoreV1(),
 		resourcelock.ResourceLockConfig{
 			Identity:      id,
-			EventRecorder: controller.CreateRecorder(kubecli, name, namespace),
+			EventRecorder: k8sutil.CreateRecorder(kubecli, name, namespace),
 		})
 	if err != nil {
 		logrus.Fatalf("error creating lock: %v", err)
@@ -110,27 +107,13 @@ func main() {
 }
 
 func run(stopCh <-chan struct{}) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		logrus.Fatalf("Error building kubeconfig: %s", err.Error())
-	}
-
-	kubeClient := kubernetes.NewForConfigOrDie(cfg)
-	operatorClient := clientset.NewForConfigOrDie(cfg)
-	apiExtClientset := apiextensionsclient.NewForConfigOrDie(cfg)
-
-	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
-	operatorInformerFactory := informers.NewSharedInformerFactory(operatorClient, time.Second*30)
 
 	// TODO: add chaos
 	//startChaos(context.Background(), cfg.KubeCli, cfg.Namespace, chaosLevel)
 
-	c := controller.New(kubeClient, operatorClient, apiExtClientset, kubeInformerFactory, operatorInformerFactory)
+	c := controller.New()
 
-	go kubeInformerFactory.Start(stopCh)
-	go operatorInformerFactory.Start(stopCh)
-
-	err = c.Run(2, stopCh)
+	err := c.Run(2, stopCh)
 	logrus.Fatalf("controller Run() failed: %v", err)
 }
 
