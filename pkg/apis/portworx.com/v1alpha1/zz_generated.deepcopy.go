@@ -111,13 +111,6 @@ func (in *ClusterSpec) DeepCopyInto(out *ClusterSpec) {
 	in.Kvdb.DeepCopyInto(&out.Kvdb)
 	out.Network = in.Network
 	in.Storage.DeepCopyInto(&out.Storage)
-	if in.Nodes != nil {
-		in, out := &in.Nodes, &out.Nodes
-		*out = make([]NodeSpec, len(*in))
-		for i := range *in {
-			(*in)[i].DeepCopyInto(&(*out)[i])
-		}
-	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
 		*out = make([]v1.EnvVar, len(*in))

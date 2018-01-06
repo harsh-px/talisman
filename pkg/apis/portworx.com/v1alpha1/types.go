@@ -42,8 +42,9 @@ type ClusterSpec struct {
 	// Storage specifies the storage configuration to be used for all nodes.
 	// This can be overridden by individual nodes in the NodeSpec
 	Storage StorageSpec `json:"storage,omitempty"`
-	Nodes   []NodeSpec  `json:"nodes,omitempty"`
-	Env     []v1.EnvVar `json:"env,omitempty"`
+	// Uncomment once we start support specifying config for each node
+	//Nodes   []NodeSpec  `json:"nodes,omitempty"`
+	Env []v1.EnvVar `json:"env,omitempty"`
 }
 
 // Nodes are all Portworx nodes participating in this cluster

@@ -51,9 +51,9 @@ type pxCluster struct {
 	pxImageTag  string
 }
 
-func (p *pxClusterOps) Create(namespace, name string) error {
+func (ops *pxClusterOps) Create(namespace, name string) error {
 	logrus.Infof("[debug] px create call for %s:%s", namespace, name)
-	spec, err := p.operatorClient.Portworx().Clusters(namespace).Get(name,
+	spec, err := ops.operatorClient.Portworx().Clusters(namespace).Get(name,
 		metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -69,47 +69,102 @@ func (p *pxClusterOps) Create(namespace, name string) error {
 		pxImageRepo: pxDefaultImageRepo,
 		pxImageTag:  pxDefaultImageTag,
 	}
-	// Get RBAC specs
-	_, err = c.getPXClusterRole()
+	// RBAC
+	role, err := c.getPXClusterRole()
 	if err != nil {
 		return err
 	}
 
-	// Get daemonset spec
-	// Get stork spec
-	// Get PVC binder spec
-	err = p.updateClusterStatus(spec)
+	role, err = ops.kubeClient.RbacV1().ClusterRoles().Create(role)
+	if err != nil {
+		return err
+	}
+
+	sa, err := c.getServiceAccount()
+	if err != nil {
+		return nil
+	}
+
+	sa, err = ops.kubeClient.CoreV1().ServiceAccounts(sa.Namespace).Create(sa)
+	if err != nil {
+		return nil
+	}
+
+	binding, err := c.getPXClusterRoleBinding()
+	if err != nil {
+		return nil
+	}
+
+	binding, err = ops.kubeClient.RbacV1().ClusterRoleBindings().Create(binding)
+	if err != nil {
+		return nil
+	}
+
+	// DaemonSet
+	ds, err := c.getPXDaemonSet()
+	if err != nil {
+		return nil
+	}
+
+	ds, err = ops.kubeClient.AppsV1().DaemonSets(ds.Namespace).Create(ds)
+	if err != nil {
+		return nil
+	}
+
+	// Service
+	svc, err := c.getPXService()
+	if err != nil {
+		return nil
+	}
+
+	svc, err = ops.kubeClient.CoreV1().Services(svc.Namespace).Create(svc)
+	if err != nil {
+		return nil
+	}
+
+	// TODO Get stork spec
+	// TODO Get PVC binder spec
+
+	err = ops.updateClusterStatus(spec)
 	if err != nil {
 		return err
 	}
 
 	// TODO record event for this cluster
-	// p.recorder.Event(cluster, v1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
+	//p.recorder.Event(cluster, v1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
 	return nil
 }
 
-func (p *pxClusterOps) Upgrade(namespace, name string) error {
+func (ops *pxClusterOps) Upgrade(namespace, name string) error {
 	logrus.Infof("upgrading px cluster")
 	return nil
 }
 
-func (p *pxClusterOps) Destroy(namespace, name string) error {
+func (ops *pxClusterOps) Destroy(namespace, name string) error {
 	logrus.Infof("destroying px cluster")
-	// TODO:  Get cluster
+	/*err := ops.kubeClient.Core().Services(namespace).Delete(pxClusterServiceName)
+	if err != nil {
+		return nil
+	}
 
+	err = ops.kubeClient.Apps().DaemonSets(namespace).Delete(pxDefaultResourceName)
+
+	err = ops.kubeClient.*/
+	return ops.operatorClient.Portworx().Clusters(namespace).Delete(name,
+		&metav1.DeleteOptions{})
 	// TODO: Find all px compoents that have owner as this cluster and delete them
-	return nil
 }
 
 func (p *pxCluster) getOwnerReference() []metav1.OwnerReference {
 	trueVar := true
 	return []metav1.OwnerReference{
-		metav1.OwnerReference{
-			APIVersion: apiv1alpha1.SchemeGroupVersion.String(),
-			Kind:       apiv1alpha1.PXClusterKind,
-			Name:       p.spec.Name,
-			UID:        p.spec.UID,
-			Controller: &trueVar,
+		{
+			APIVersion:         apiv1alpha1.SchemeGroupVersion.String(),
+			Kind:               apiv1alpha1.PXClusterKind,
+			Name:               p.spec.Name,
+			UID:                p.spec.UID,
+			Controller:         &trueVar,
+			BlockOwnerDeletion: &trueVar,
 		},
 	}
 }
@@ -161,7 +216,7 @@ func (p *pxCluster) getPXClusterRoleBinding() (*rbacv1.ClusterRoleBinding, error
 			OwnerReferences: p.getOwnerReference(),
 			Labels:          pxDefaultLabels,
 		},
-		Subjects: []rbacv1.Subject{rbacv1.Subject{
+		Subjects: []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
 			Name:      pxDefaultResourceName,
 			Namespace: pxDefaultNamespace,
@@ -183,7 +238,7 @@ func (p *pxCluster) getPXService() (*corev1.Service, error) {
 		Spec: corev1.ServiceSpec{
 			Selector: pxDefaultLabels,
 			Ports: []corev1.ServicePort{
-				corev1.ServicePort{
+				{
 					Protocol: corev1.Protocol("TCP"),
 					Port:     pxRestEndpointPort,
 					TargetPort: intstr.IntOrString{
@@ -198,7 +253,40 @@ func (p *pxCluster) getPXService() (*corev1.Service, error) {
 
 func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 	trueVar := true
+
 	kvdbEndpoints := strings.Join(p.spec.Spec.Kvdb.Endpoints, ",")
+	args := []string{"-k", kvdbEndpoints, "-c", p.spec.Name, "-x", "kubernetes"}
+
+	if len(p.spec.Spec.PXVersion) > 0 {
+		p.pxImageTag = p.spec.Spec.PXVersion
+	}
+
+	// storage
+	if len(p.spec.Spec.Storage.Devices) > 0 {
+		for _, d := range p.spec.Spec.Storage.Devices {
+			args = append(args, "-s", d)
+		}
+	} else if p.spec.Spec.Storage.ZeroStorage {
+		args = append(args, "-z")
+	} else {
+		logrus.Infof("defaulting to using all devices for cluster: %s", p.spec.Name)
+		args = append(args, "-a")
+
+		if p.spec.Spec.Storage.UseAllWithParitions {
+			args = append(args, "-F")
+		} else if p.spec.Spec.Storage.Force {
+			args = append(args, "-f")
+		}
+	}
+
+	// network
+	if len(p.spec.Spec.Network.Data) > 0 {
+		args = append(args, "-d", p.spec.Spec.Network.Data)
+	}
+
+	if len(p.spec.Spec.Network.Mgmt) > 0 {
+		args = append(args, "-m", p.spec.Spec.Network.Mgmt)
+	}
 
 	return &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -224,14 +312,14 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 						NodeAffinity: &corev1.NodeAffinity{
 							RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 								NodeSelectorTerms: []corev1.NodeSelectorTerm{
-									corev1.NodeSelectorTerm{
+									{
 										MatchExpressions: []corev1.NodeSelectorRequirement{
-											corev1.NodeSelectorRequirement{
+											{
 												Key:      pxEnableLabelKey,
 												Operator: corev1.NodeSelectorOpNotIn,
 												Values:   []string{"false"},
 											},
-											corev1.NodeSelectorRequirement{
+											{
 												Key:      "node-role.kubernetes.io/master",
 												Operator: corev1.NodeSelectorOpDoesNotExist,
 											},
@@ -244,19 +332,13 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 					HostNetwork: true,
 					HostPID:     true,
 					Containers: []corev1.Container{
-						corev1.Container{
+						{
 							Name:  pxDefaultResourceName,
 							Image: fmt.Sprintf("%s:%s", p.pxImageRepo, p.pxImageTag),
 							TerminationMessagePath: "/tmp/px-termination-log",
 							ImagePullPolicy:        corev1.PullAlways,
-							Args: []string{
-								"-k", kvdbEndpoints,
-								"-c", p.spec.Name,
-								"-a", // TODO take in storage args
-								"-f",
-								"-x", "kubernetes",
-							},
-							Env: p.spec.Spec.Env,
+							Args:                   args,
+							Env:                    p.spec.Spec.Env,
 							LivenessProbe: &corev1.Probe{
 								PeriodSeconds:       30,
 								InitialDelaySeconds: 840,
@@ -287,43 +369,43 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: &trueVar,
 							},
-							/*VolumeMounts: []corev1.VolumeMount{
-								corev1.VolumeMount{
+							VolumeMounts: []corev1.VolumeMount{
+								{
 									Name:      "dockersock",
 									MountPath: "/var/run/docker.sock",
 								},
-								corev1.VolumeMount{
+								{
 									Name:      "kubelet",
 									MountPath: "/var/lib/kubelet:shared",
 								},
-								corev1.VolumeMount{
+								{
 									Name:      "libosd",
 									MountPath: "/var/lib/osd:shared",
 								},
-								corev1.VolumeMount{
+								{
 									Name:      "etcpwx",
 									MountPath: "/etc/pwx",
 								},
-								corev1.VolumeMount{
+								{
 									Name:      "optpwx",
 									MountPath: "/opt/pwx",
 								},
-								corev1.VolumeMount{
+								{
 									Name:      "proc1nsmount",
 									MountPath: "/host_proc/1/ns",
 								},
-								corev1.VolumeMount{
+								{
 									Name:      "sysdmount",
 									MountPath: "/etc/systemd/system",
 								},
-							},*/
+							},
 						},
 					},
 					RestartPolicy:      "Always",
 					ServiceAccountName: pxDefaultResourceName,
 					// TODO: update volummes based on openshift
 					Volumes: []corev1.Volume{
-						corev1.Volume{
+						{
 							Name: "dockersock",
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
@@ -331,7 +413,7 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 								},
 							},
 						},
-						corev1.Volume{
+						{
 							Name: "kubelet",
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
@@ -339,7 +421,7 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 								},
 							},
 						},
-						corev1.Volume{
+						{
 							Name: "libosd",
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
@@ -347,7 +429,7 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 								},
 							},
 						},
-						corev1.Volume{
+						{
 							Name: "etcpwx",
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
@@ -355,7 +437,7 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 								},
 							},
 						},
-						corev1.Volume{
+						{
 							Name: "optpwx",
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
@@ -363,7 +445,7 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 								},
 							},
 						},
-						corev1.Volume{
+						{
 							Name: "proc1nsmount",
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
@@ -371,7 +453,7 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 								},
 							},
 						},
-						corev1.Volume{
+						{
 							Name: "sysdmount",
 							VolumeSource: corev1.VolumeSource{
 								HostPath: &corev1.HostPathVolumeSource{
