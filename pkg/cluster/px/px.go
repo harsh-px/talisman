@@ -16,10 +16,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
@@ -51,6 +49,25 @@ type pxCluster struct {
 	pxImageTag  string
 }
 
+// NewPXClusterProvider creates a new PX cluster
+func NewPXClusterProvider(conf map[string]interface{}) (cluster.Cluster, error) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("Error building kubeconfig: %s", err.Error())
+	}
+
+	kubeClient := kubernetes.NewForConfigOrDie(cfg)
+	operatorClient := clientset.NewForConfigOrDie(cfg)
+	operatorInformerFactory := informers.NewSharedInformerFactory(operatorClient, time.Second*30)
+	pxInformer := operatorInformerFactory.Portworx().V1alpha1().Clusters()
+	return &pxClusterOps{
+		kubeClient:     kubeClient,
+		operatorClient: operatorClient,
+		recorder:       k8sutil.CreateRecorder(kubeClient, "talisman", ""),
+		clustersLister: pxInformer.Lister(),
+	}, nil
+}
+
 func (ops *pxClusterOps) Create(namespace, name string) error {
 	logrus.Infof("[debug] px create call for %s:%s", namespace, name)
 	spec, err := ops.operatorClient.Portworx().Clusters(namespace).Get(name,
@@ -61,7 +78,25 @@ func (ops *pxClusterOps) Create(namespace, name string) error {
 
 	logrus.Infof("request to create new px cluster: %#v", spec)
 
-	// TODO add gatekeeper check to ensure only one cluster is running
+	cls, err := ops.operatorClient.Portworx().Clusters("").List(metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+
+	if len(cls.Items) > 1 {
+		policy := metav1.DeletePropagationForeground
+		err = ops.operatorClient.Portworx().Clusters(namespace).Delete(name,
+			&metav1.DeleteOptions{
+				PropagationPolicy: &policy,
+			})
+		if err != nil {
+			return err
+		}
+
+		return fmt.Errorf("failed creating new px cluster: %s. "+
+			" only one portworx cluster is supported.", spec.Name)
+	}
+
 	logrus.Infof("creating a new portworx cluster: %#v", spec)
 
 	c := &pxCluster{
@@ -476,7 +511,7 @@ func (p *pxCluster) getPVCController() (*corev1.ServiceAccount,
 }
 
 // TODO fix the signature based on px objects
-func (p *pxClusterOps) updateClusterStatus(cluster *apiv1alpha1.Cluster) error {
+func (ops *pxClusterOps) updateClusterStatus(cluster *apiv1alpha1.Cluster) error {
 	// NEVER modify objects from the store. It's a read-only, local cache.
 	// You can use DeepCopy() to make a deep copy of original object and modify this copy
 	// Or create a copy manually for better performance
@@ -486,27 +521,6 @@ func (p *pxClusterOps) updateClusterStatus(cluster *apiv1alpha1.Cluster) error {
 	// TODO perform additional operations to fetch status. Refer to sample, etcd and rook operators
 
 	return nil
-}
-
-// NewPXClusterProvider creates a new PX cluster
-func NewPXClusterProvider(conf map[string]interface{}) (cluster.Cluster, error) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("Error building kubeconfig: %s", err.Error())
-	}
-
-	kubeClient := kubernetes.NewForConfigOrDie(cfg)
-	operatorClient := clientset.NewForConfigOrDie(cfg)
-	_ = apiextensionsclient.NewForConfigOrDie(cfg)
-	_ = kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
-	operatorInformerFactory := informers.NewSharedInformerFactory(operatorClient, time.Second*30)
-	pxInformer := operatorInformerFactory.Portworx().V1alpha1().Clusters()
-	return &pxClusterOps{
-		kubeClient:     kubeClient,
-		operatorClient: operatorClient,
-		recorder:       k8sutil.CreateRecorder(kubeClient, "talisman", ""),
-		clustersLister: pxInformer.Lister(),
-	}, nil
 }
 
 func init() {
