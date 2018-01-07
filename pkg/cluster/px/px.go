@@ -15,6 +15,7 @@ import (
 	"github.com/sirupsen/logrus"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	extensionsv1beta1 "k8s.io/api/extensions/v1beta1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -117,44 +118,49 @@ func (ops *pxClusterOps) Create(namespace, name string) error {
 
 	sa, err := c.getServiceAccount()
 	if err != nil {
-		return nil
+		return err
 	}
 
 	sa, err = ops.kubeClient.CoreV1().ServiceAccounts(sa.Namespace).Create(sa)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	binding, err := c.getPXClusterRoleBinding()
 	if err != nil {
-		return nil
+		return err
 	}
 
 	binding, err = ops.kubeClient.RbacV1().ClusterRoleBindings().Create(binding)
 	if err != nil {
-		return nil
+		return err
 	}
+
+	logrus.Infof("[debug] created clusterrolebinging: %#v", binding)
 
 	// DaemonSet
 	ds, err := c.getPXDaemonSet()
 	if err != nil {
-		return nil
+		return err
 	}
 
-	ds, err = ops.kubeClient.AppsV1().DaemonSets(ds.Namespace).Create(ds)
+	ds, err = ops.kubeClient.Extensions().DaemonSets(ds.Namespace).Create(ds)
 	if err != nil {
-		return nil
+		logrus.Errorf("failed creating daemonset: %s. Err: %s", ds.Name, err)
+		return err
 	}
+
+	logrus.Infof("created daemonset: %#v", ds)
 
 	// Service
 	svc, err := c.getPXService()
 	if err != nil {
-		return nil
+		return err
 	}
 
 	svc, err = ops.kubeClient.CoreV1().Services(svc.Namespace).Create(svc)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	// TODO Get stork spec
@@ -286,7 +292,7 @@ func (p *pxCluster) getPXService() (*corev1.Service, error) {
 	}, nil
 }
 
-func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
+func (p *pxCluster) getPXDaemonSet() (*extensionsv1beta1.DaemonSet, error) {
 	trueVar := true
 
 	kvdbEndpoints := strings.Join(p.spec.Spec.Kvdb.Endpoints, ",")
@@ -323,18 +329,18 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 		args = append(args, "-m", p.spec.Spec.Network.Mgmt)
 	}
 
-	return &appsv1.DaemonSet{
+	return &extensionsv1beta1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            pxDefaultResourceName,
 			Namespace:       pxDefaultNamespace,
 			OwnerReferences: p.getOwnerReference(),
 			Labels:          pxDefaultLabels,
 		},
-		Spec: appsv1.DaemonSetSpec{
+		Spec: extensionsv1beta1.DaemonSetSpec{
 			MinReadySeconds: 0,
-			UpdateStrategy: appsv1.DaemonSetUpdateStrategy{
-				Type: appsv1.RollingUpdateDaemonSetStrategyType,
-				RollingUpdate: &appsv1.RollingUpdateDaemonSet{
+			UpdateStrategy: extensionsv1beta1.DaemonSetUpdateStrategy{
+				Type: extensionsv1beta1.RollingUpdateDaemonSetStrategyType,
+				RollingUpdate: &extensionsv1beta1.RollingUpdateDaemonSet{
 					MaxUnavailable: &intstr.IntOrString{
 						Type:   intstr.Int,
 						IntVal: 1,
@@ -342,6 +348,9 @@ func (p *pxCluster) getPXDaemonSet() (*appsv1.DaemonSet, error) {
 				},
 			},
 			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: pxDefaultLabels,
+				},
 				Spec: corev1.PodSpec{
 					Affinity: &corev1.Affinity{
 						NodeAffinity: &corev1.NodeAffinity{

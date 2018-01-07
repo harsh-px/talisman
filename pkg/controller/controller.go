@@ -328,6 +328,7 @@ func (c *Controller) sync(ev event) error {
 			return nil
 		}
 
+		logrus.Errorf("event: %v failed. Err: %v", ev.eventType, err)
 		return err
 	}
 
