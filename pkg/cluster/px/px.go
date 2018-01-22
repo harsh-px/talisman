@@ -30,7 +30,7 @@ const (
 	pxRestHealthEndpointPort = 9015
 	pxEnableLabelKey         = "px/enabled"
 	pxDefaultImageRepo       = "portworx/oci-monitor"
-	pxDefaultImageTag        = "1.2.12.0"
+	pxDefaultImageTag        = "1.2.12.1"
 )
 
 var pxDefaultLabels = map[string]string{"name": pxDefaultResourceName}
@@ -55,9 +55,7 @@ type Cluster interface {
 }
 
 type pxCluster struct {
-	spec        *apiv1alpha1.Cluster
-	pxImageRepo string
-	pxImageTag  string
+	spec *apiv1alpha1.Cluster
 }
 
 func (ops *pxClusterOps) Create(spec *apiv1alpha1.Cluster) error {
@@ -87,10 +85,9 @@ func (ops *pxClusterOps) Create(spec *apiv1alpha1.Cluster) error {
 	logrus.Infof("creating a new portworx cluster: %#v", spec)
 
 	c := &pxCluster{
-		spec:        spec,
-		pxImageRepo: pxDefaultImageRepo,
-		pxImageTag:  pxDefaultImageTag,
+		spec: spec,
 	}
+
 	// RBAC
 	role, err := c.getPXClusterRole()
 	if err != nil {
@@ -165,9 +162,7 @@ func (ops *pxClusterOps) Upgrade(new *apiv1alpha1.Cluster) error {
 	// TODO check if anything needs to be changed in the ds spec
 	// TODO check px target px version is supported
 	c := &pxCluster{
-		spec:        new,
-		pxImageRepo: pxDefaultImageRepo,
-		pxImageTag:  pxDefaultImageTag,
+		spec: new,
 	}
 
 	// DaemonSet
@@ -291,8 +286,11 @@ func (p *pxCluster) getPXDaemonSet() (*extensionsv1beta1.DaemonSet, error) {
 	kvdbEndpoints := strings.Join(p.spec.Spec.Kvdb.Endpoints, ",")
 	args := []string{"-k", kvdbEndpoints, "-c", p.spec.Name, "-x", "kubernetes"}
 
+	var pxImage string
 	if len(p.spec.Spec.PXVersion) > 0 {
-		p.pxImageTag = p.spec.Spec.PXVersion
+		pxImage = p.spec.Spec.PXVersion
+	} else {
+		pxImage = fmt.Sprintf("%s:%s", pxDefaultImageRepo, pxDefaultImageTag)
 	}
 
 	// storage
@@ -371,7 +369,7 @@ func (p *pxCluster) getPXDaemonSet() (*extensionsv1beta1.DaemonSet, error) {
 					Containers: []corev1.Container{
 						{
 							Name:  pxDefaultResourceName,
-							Image: fmt.Sprintf("%s:%s", p.pxImageRepo, p.pxImageTag),
+							Image: pxImage,
 							TerminationMessagePath: "/tmp/px-termination-log",
 							ImagePullPolicy:        corev1.PullAlways,
 							Args:                   args,
