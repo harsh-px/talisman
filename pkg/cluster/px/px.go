@@ -2,6 +2,7 @@ package px
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 )
 
@@ -56,6 +58,33 @@ type Cluster interface {
 
 type pxCluster struct {
 	spec *apiv1alpha1.Cluster
+}
+
+// NewPXClusterProvider creates a new PX cluster
+func NewPXClusterProvider(conf map[string]interface{}) (Cluster, error) {
+	var cfg *rest.Config
+	var err error
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if len(kubeconfig) > 0 {
+		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	} else {
+		cfg, err = rest.InClusterConfig()
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("Error building kubeconfig: %s", err.Error())
+	}
+
+	kubeClient := kubernetes.NewForConfigOrDie(cfg)
+	operatorClient := clientset.NewForConfigOrDie(cfg)
+	operatorInformerFactory := informers.NewSharedInformerFactory(operatorClient, time.Second*30)
+	pxInformer := operatorInformerFactory.Portworx().V1alpha1().Clusters()
+	return &pxClusterOps{
+		kubeClient:     kubeClient,
+		operatorClient: operatorClient,
+		recorder:       k8sutil.CreateRecorder(kubeClient, "talisman", ""),
+		clustersLister: pxInformer.Lister(),
+	}, nil
 }
 
 func (ops *pxClusterOps) Create(spec *apiv1alpha1.Cluster) error {
@@ -508,23 +537,4 @@ func (p *pxCluster) getPVCController() (*corev1.ServiceAccount,
 	*rbacv1.ClusterRoleBinding,
 	*appsv1.Deployment, error) {
 	return nil, nil, nil, nil, nil
-}
-
-// NewPXClusterProvider creates a new PX cluster
-func NewPXClusterProvider(conf map[string]interface{}) (Cluster, error) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("Error building kubeconfig: %s", err.Error())
-	}
-
-	kubeClient := kubernetes.NewForConfigOrDie(cfg)
-	operatorClient := clientset.NewForConfigOrDie(cfg)
-	operatorInformerFactory := informers.NewSharedInformerFactory(operatorClient, time.Second*30)
-	pxInformer := operatorInformerFactory.Portworx().V1alpha1().Clusters()
-	return &pxClusterOps{
-		kubeClient:     kubeClient,
-		operatorClient: operatorClient,
-		recorder:       k8sutil.CreateRecorder(kubeClient, "talisman", ""),
-		clustersLister: pxInformer.Lister(),
-	}, nil
 }
