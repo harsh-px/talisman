@@ -57,7 +57,8 @@ type Cluster interface {
 }
 
 type pxCluster struct {
-	spec *apiv1alpha1.Cluster
+	spec          *apiv1alpha1.Cluster
+	defaultLabels map[string]string
 }
 
 // NewPXClusterProvider creates a new PX cluster
@@ -66,6 +67,7 @@ func NewPXClusterProvider(conf map[string]interface{}) (Cluster, error) {
 	var err error
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if len(kubeconfig) > 0 {
+		logrus.Debugf("using kubeconfig: %s to create k8s client", kubeconfig)
 		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 	} else {
 		cfg, err = rest.InClusterConfig()
@@ -88,33 +90,14 @@ func NewPXClusterProvider(conf map[string]interface{}) (Cluster, error) {
 }
 
 func (ops *pxClusterOps) Create(spec *apiv1alpha1.Cluster) error {
-	logrus.Infof("request to create new px cluster: %#v", spec)
-
-	name := spec.Name
-	namespace := spec.Namespace
-	cls, err := ops.operatorClient.Portworx().Clusters("").List(metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-
-	if len(cls.Items) > 1 {
-		policy := metav1.DeletePropagationForeground
-		err = ops.operatorClient.Portworx().Clusters(namespace).Delete(name,
-			&metav1.DeleteOptions{
-				PropagationPolicy: &policy,
-			})
-		if err != nil {
-			return err
-		}
-
-		return fmt.Errorf("failed creating new px cluster: %s. "+
-			" only one portworx cluster is supported.", spec.Name)
-	}
-
 	logrus.Infof("creating a new portworx cluster: %#v", spec)
 
+	labels := pxDefaultLabels
+	labels["cluster"] = spec.Name
+
 	c := &pxCluster{
-		spec: spec,
+		spec:          spec,
+		defaultLabels: labels,
 	}
 
 	// RBAC
@@ -213,27 +196,12 @@ func (ops *pxClusterOps) Destroy(c *apiv1alpha1.Cluster) error {
 	return nil
 }
 
-func (p *pxCluster) getOwnerReference() []metav1.OwnerReference {
-	trueVar := true
-	return []metav1.OwnerReference{
-		{
-			APIVersion:         apiv1alpha1.SchemeGroupVersion.String(),
-			Kind:               apiv1alpha1.PXClusterKind,
-			Name:               p.spec.Name,
-			UID:                p.spec.UID,
-			Controller:         &trueVar,
-			BlockOwnerDeletion: &trueVar,
-		},
-	}
-}
-
 func (p *pxCluster) getServiceAccount() (*corev1.ServiceAccount, error) {
 	return &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            pxDefaultResourceName,
-			Namespace:       pxDefaultNamespace,
-			OwnerReferences: p.getOwnerReference(),
-			Labels:          pxDefaultLabels,
+			Name:      pxDefaultResourceName,
+			Namespace: pxDefaultNamespace,
+			Labels:    p.defaultLabels,
 		},
 	}, nil
 }
@@ -259,9 +227,8 @@ func (p *pxCluster) getPXClusterRole() (*rbacv1.ClusterRole, error) {
 
 	return &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            pxDefaultResourceName,
-			OwnerReferences: p.getOwnerReference(),
-			Labels:          pxDefaultLabels,
+			Name:   pxDefaultResourceName,
+			Labels: p.defaultLabels,
 		},
 		Rules: rules,
 	}, nil
@@ -270,9 +237,8 @@ func (p *pxCluster) getPXClusterRole() (*rbacv1.ClusterRole, error) {
 func (p *pxCluster) getPXClusterRoleBinding() (*rbacv1.ClusterRoleBinding, error) {
 	return &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            pxDefaultResourceName,
-			OwnerReferences: p.getOwnerReference(),
-			Labels:          pxDefaultLabels,
+			Name:   pxDefaultResourceName,
+			Labels: p.defaultLabels,
 		},
 		Subjects: []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
@@ -289,9 +255,9 @@ func (p *pxCluster) getPXClusterRoleBinding() (*rbacv1.ClusterRoleBinding, error
 func (p *pxCluster) getPXService() (*corev1.Service, error) {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            pxClusterServiceName,
-			OwnerReferences: p.getOwnerReference(),
-			Labels:          pxDefaultLabels,
+			Name:      pxClusterServiceName,
+			Namespace: pxDefaultNamespace,
+			Labels:    p.defaultLabels,
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: pxDefaultLabels,
@@ -351,10 +317,9 @@ func (p *pxCluster) getPXDaemonSet() (*extensionsv1beta1.DaemonSet, error) {
 
 	return &extensionsv1beta1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            pxDefaultResourceName,
-			Namespace:       pxDefaultNamespace,
-			OwnerReferences: p.getOwnerReference(),
-			Labels:          pxDefaultLabels,
+			Name:      pxDefaultResourceName,
+			Namespace: pxDefaultNamespace,
+			Labels:    pxDefaultLabels,
 		},
 		Spec: extensionsv1beta1.DaemonSetSpec{
 			MinReadySeconds: 0,
