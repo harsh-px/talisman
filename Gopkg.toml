@@ -33,6 +33,14 @@
   name = "github.com/sirupsen/logrus"
   version = "1.0.4"
 
+[[constraint]]
+  name = "github.com/portworx/sched-ops"
+  source = "https://github.com/harsh-px/sched-ops.git"
+  branch = "dsvalidate"
+
+[[constraint]]
+  name = "k8s.io/apimachinery"
+  branch = "release-1.8"
 [prune]
   go-tests = true
   unused-packages = true
