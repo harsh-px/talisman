@@ -61,7 +61,7 @@ talisman: codegen
 	go build $(LDFLAGS) -o $(BIN)/talisman cmd/talisman/talisman.go
 
 test:
-	go test -tags "$(TAGS)" $(TESTFLAGS) $(PKGS)
+	go test -v -tags "$(TAGS)" $(TESTFLAGS) $(PKGS)
 
 docker-puller:
 	sudo docker build -t $(DOCKER_PULLER_IMG) cmd/docker-puller/

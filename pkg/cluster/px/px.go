@@ -12,6 +12,7 @@ import (
 	extensionsv1beta1 "k8s.io/api/extensions/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -61,6 +62,15 @@ func NewPXClusterProvider(dockerRegistrySecret string) (Cluster, error) {
 	return &pxClusterOps{
 		kubeClient:           kubeClient,
 		k8sOps:               k8s.Instance(),
+		dockerRegistrySecret: dockerRegistrySecret,
+	}, nil
+}
+
+func newFakePXClusterProvider(dockerRegistrySecret string) (Cluster, error) {
+	logrus.Infof("creating a fake px cluster provider")
+	return &pxClusterOps{
+		kubeClient:           &fakeclientset.Clientset{},
+		k8sOps:               k8s.FakeInstance(),
 		dockerRegistrySecret: dockerRegistrySecret,
 	}, nil
 }

@@ -23,8 +23,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/typed/apps/v1beta2"
 	"k8s.io/client-go/rest"
+	fakerestclient "k8s.io/client-go/rest/fake"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -247,8 +249,9 @@ var (
 )
 
 type k8sOps struct {
-	client     *kubernetes.Clientset
-	snapClient *rest.RESTClient
+	client     kubernetes.Interface
+	snapClient rest.Interface
+	fake       bool
 }
 
 // Instance returns a singleton instance of k8sOps type
@@ -259,16 +262,28 @@ func Instance() Ops {
 	return instance
 }
 
+// FakeInstance returns a fake instance of k8sOps where the clients don't talk to an actual kubernetes cluster
+func FakeInstance() Ops {
+	once.Do(func() {
+		instance = &k8sOps{
+			client:     &fakeclientset.Clientset{},
+			snapClient: &fakerestclient.RESTClient{},
+			fake:       true,
+		}
+	})
+	return instance
+}
+
 // Initialize the k8s client if uninitialized
 func (k *k8sOps) initK8sClient() error {
-	if k.client == nil {
+	if !k.fake && k.client == nil {
 		k8sClient, snapClient, err := getK8sClient()
 		if err != nil {
 			return err
 		}
 
 		// Quick validation if client connection works
-		_, err = k8sClient.ServerVersion()
+		_, err = k8sClient.Discovery().ServerVersion()
 		if err != nil {
 			return fmt.Errorf("failed to connect to k8s server: %s", err)
 		}
@@ -284,7 +299,7 @@ func (k *k8sOps) CreateNamespace(name string, metadata map[string]string) (*v1.N
 		return nil, err
 	}
 
-	return k.client.CoreV1().Namespaces().Create(&v1.Namespace{
+	return k.client.Core().Namespaces().Create(&v1.Namespace{
 		ObjectMeta: meta_v1.ObjectMeta{
 			Name:   name,
 			Labels: metadata,
@@ -1686,7 +1701,7 @@ func (k *k8sOps) appsClient() v1beta2.AppsV1beta2Interface {
 }
 
 // getK8sClient instantiates a k8s client
-func getK8sClient() (*kubernetes.Clientset, *rest.RESTClient, error) {
+func getK8sClient() (kubernetes.Interface, rest.Interface, error) {
 	var k8sClient *kubernetes.Clientset
 	var restClient *rest.RESTClient
 	var err error
