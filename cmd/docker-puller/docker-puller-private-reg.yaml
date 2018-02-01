@@ -11,7 +11,7 @@ spec:
     spec:
       containers:
         - name: docker-puller
-          image: harshpx/docker-puller:latest
+          image: portworx/docker-puller:latest
           imagePullPolicy: Always
           args:
           - "-i"

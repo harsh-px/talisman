@@ -18,7 +18,7 @@ import (
 
 const (
 	pxDefaultNamespace = "kube-system"
-	dockerPullerImage  = "harshpx/docker-puller:latest"
+	dockerPullerImage  = "portworx/docker-puller:latest"
 )
 
 type pxClusterOps struct {

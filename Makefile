@@ -6,7 +6,6 @@
 .PHONY: version all operator run clean container deploy talisman
 
 DOCKER_HUB_TAG ?= latest
-OPERATOR_IMG=$(DOCKER_HUB_REPO)/operator:$(DOCKER_HUB_TAG)
 DOCKER_PULLER_IMG=$(DOCKER_HUB_REPO)/docker-puller:$(DOCKER_HUB_TAG)
 TALISMAN_IMG=$(DOCKER_HUB_REPO)/talisman:$(DOCKER_HUB_TAG)
 
@@ -65,8 +64,8 @@ test:
 	go test -tags "$(TAGS)" $(TESTFLAGS) $(PKGS)
 
 docker-puller:
-	docker build -t $(DOCKER_PULLER_IMG) cmd/docker-puller/
-	docker push $(DOCKER_PULLER_IMG)
+	sudo docker build -t $(DOCKER_PULLER_IMG) cmd/docker-puller/
+	sudo docker push $(DOCKER_PULLER_IMG)
 
 fmt:
 	@echo "Performing gofmt on following: $(PKGS)"
@@ -111,15 +110,12 @@ verifycodegen:
 pretest: checkfmt vet lint errcheck verifycodegen
 
 container:
-	@echo "Building container: docker build --tag $(OPERATOR_IMG) -f Dockerfile ."
-	sudo docker build --tag $(OPERATOR_IMG) -f Dockerfile .
-
-	@echo "Building container: docker build --tag $(TALISMAN_IMG) -f Dockerfile.talisman ."
 	sudo docker build --tag $(TALISMAN_IMG) -f Dockerfile.talisman .
+	sudo docker build --tag $(DOCKER_PULLER_IMG) cmd/docker-puller/
 
 deploy: container
-	sudo docker push $(OPERATOR_IMG)
 	sudo docker push $(TALISMAN_IMG)
+	sudo docker push $(DOCKER_PULLER_IMG)
 
 docker-build:
 	docker build -t px/docker-build -f Dockerfile.build .
@@ -127,9 +123,6 @@ docker-build:
 	docker run \
 		--privileged \
 		-v $(shell pwd):/go/src/github.com/portworx/talisman \
-		-e DOCKER_HUB_REPO=$(DOCKER_HUB_REPO) \
-		-e DOCKER_HUB_TORPEDO_IMAGE=$(DOCKER_HUB_TORPEDO_IMAGE) \
-		-e DOCKER_HUB_TAG=$(DOCKER_HUB_TAG) \
 		px/docker-build make all
 
 .PHONY: test clean name run version
