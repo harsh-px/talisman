@@ -266,7 +266,7 @@ func Instance() Ops {
 func FakeInstance() Ops {
 	once.Do(func() {
 		instance = &k8sOps{
-			client:     &fakeclientset.Clientset{},
+			client:     fakeclientset.NewSimpleClientset(),
 			snapClient: &fakerestclient.RESTClient{},
 			fake:       true,
 		}

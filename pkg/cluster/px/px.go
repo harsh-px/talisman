@@ -69,7 +69,7 @@ func NewPXClusterProvider(dockerRegistrySecret string) (Cluster, error) {
 func newFakePXClusterProvider(dockerRegistrySecret string) (Cluster, error) {
 	logrus.Infof("creating a fake px cluster provider")
 	return &pxClusterOps{
-		kubeClient:           &fakeclientset.Clientset{},
+		kubeClient:           fakeclientset.NewSimpleClientset(),
 		k8sOps:               k8s.FakeInstance(),
 		dockerRegistrySecret: dockerRegistrySecret,
 	}, nil
